@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Media Streaming Service</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <!-- Scripts with "defer" run in this order after the page is parsed:
+       1. app.js registers our Alpine component,
+       2. hls.js adds HLS playback to browsers without native HLS (Chrome, Firefox, Edge),
+       3. Alpine.js starts and brings the page to life. -->
+  <script defer src="/static/app.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+</head>
+<body x-data="streamingApp" x-cloak>
+
+  <header class="topbar">
+    <div class="brand"><span class="logo">&#9654;</span> Media Streaming Service</div>
+    <div class="server-state" :class="serverOnline ? 'online' : 'offline'">
+      <span class="dot"></span>
+      <span x-text="serverOnline ? 'Server online · up ' + formatDuration(serverStats ? serverStats.uptimeSeconds : 0) : 'Server unreachable'"></span>
+    </div>
+  </header>
+
+  <main class="layout">
+
+    <!-- ============================================================ Library -->
+    <section class="panel library">
+      <div class="panel-head">
+        <div class="tabs">
+          <button :class="{ active: tab === 'videos' }" @click="tab = 'videos'">
+            Videos <span class="count" x-text="library.videos.length"></span>
+          </button>
+          <button :class="{ active: tab === 'audios' }" @click="tab = 'audios'">
+            Audios <span class="count" x-text="library.audios.length"></span>
+          </button>
+        </div>
+        <button class="icon-button" @click="loadLibrary()" :disabled="loadingLibrary" title="Rescan the media folders">&#10227;</button>
+      </div>
+
+      <p class="muted" x-show="loadingLibrary && !libraryLoaded">Scanning folders&hellip;</p>
+      <div class="empty" x-show="libraryLoaded && currentList.length === 0">
+        No files yet. Copy some files into the <code x-text="tab"></code> folder, then press &#10227;.
+      </div>
+
+      <ul class="media-list">
+        <template x-for="item in currentList" :key="item.id">
+          <li :class="{ selected: selected && selected.id === item.id, unreadable: !item.playable }" @click="select(item)">
+            <div class="media-name" x-text="item.name"></div>
+            <div class="media-meta">
+              <span x-text="formatDuration(item.durationSeconds)"></span>
+              <span x-text="formatBytes(item.sizeBytes)"></span>
+              <span x-show="item.video" x-text="item.video ? item.video.width + '×' + item.video.height : ''"></span>
+              <span class="badge" :class="badgeFor(item).css" x-text="badgeFor(item).text"></span>
+            </div>
+          </li>
+        </template>
+      </ul>
+    </section>
+
+    <!-- ============================================================ Player -->
+    <section class="panel player">
+      <div class="placeholder" x-show="!selected">
+        <div class="big-icon">&#127916;</div>
+        Pick a video or audio file on the left to start streaming.
+      </div>
+
+      <div x-show="selected">
+        <div class="player-head">
+          <h2 x-text="selected ? selected.name : ''"></h2>
+          <div class="controls">
+            <label>Mode
+              <select x-model="mode" @change="start()">
+                <option value="hls">HLS adaptive (H.264/AAC)</option>
+                <option value="direct">Original file (no ABR)</option>
+              </select>
+            </label>
+            <label x-show="mode === 'hls' && levels.length > 0">Quality
+              <select x-model.number="selectedLevel" @change="chooseLevel()">
+                <option value="-1" x-text="'Auto' + (playerStats.levelLabel ? ' (' + playerStats.levelLabel + ')' : '')"></option>
+                <template x-for="level in levels" :key="level.index">
+                  <option :value="level.index" x-text="level.label"></option>
+                </template>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="video-frame" :class="{ 'audio-only': selected && selected.type === 'audio' }">
+          <video x-ref="video" controls playsinline
+                 @waiting="onWaiting()" @playing="onPlaying()" @pause="onPause()" @ended="onEnded()"
+                 @error="onVideoError()"></video>
+          <div class="audio-art" x-show="selected && selected.type === 'audio'">&#127925;</div>
+        </div>
+
+        <div class="status-line" :class="status.kind">
+          <span class="status-dot"></span>
+          <span x-text="status.text"></span>
+          <button class="link-button" x-show="status.kind === 'error'" @click="start()">Try again</button>
+        </div>
+        <div class="progress" x-show="status.kind === 'busy' && mode === 'hls'">
+          <div class="progress-bar" :style="'width:' + Math.round(prepareProgress * 100) + '%'"></div>
+        </div>
+
+        <div class="rtsp-box" x-show="selected">
+          <div class="rtsp-title">Watch the same file over RTSP/RTP (VLC, ffplay, &hellip;)</div>
+          <div class="rtsp-row">
+            <code class="rtsp-url" x-text="rtspUrl"></code>
+            <button class="small-button" @click="copy(rtspUrl)" x-text="copiedText === rtspUrl ? 'Copied!' : 'Copy'"></button>
+          </div>
+          <div class="hint">
+            Browsers cannot play RTSP. Try <code x-text="'ffplay -rtsp_transport tcp &quot;' + rtspUrl + '&quot;'"></code>
+            or VLC &rarr; <em>Media &rarr; Open Network Stream</em>. Add <code>?rendition=0</code> to the URL to force one quality.
+          </div>
+        </div>
+
+        <div class="events" x-show="events.length > 0">
+          <div class="events-title">Player events</div>
+          <template x-for="event in events" :key="event.id">
+            <div class="event" :class="event.kind"><span class="time" x-text="event.time"></span> <span x-text="event.text"></span></div>
+          </template>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ Stats -->
+    <section class="panel stats">
+      <h3>Playback</h3>
+      <table class="kv">
+        <tr><td>Engine</td><td x-text="playerStats.engine || '–'"></td></tr>
+        <tr><td>Position</td><td x-text="formatDuration(playerStats.position) + ' / ' + formatDuration(playerStats.duration)"></td></tr>
+        <tr><td>Buffer ahead</td><td x-text="playerStats.bufferAhead.toFixed(1) + ' s'"></td></tr>
+        <tr><td>Quality</td><td x-text="playerStats.levelLabel || '–'"></td></tr>
+        <tr><td>Level bitrate</td><td x-text="formatBitrate(playerStats.levelBitrate)"></td></tr>
+        <tr><td>Bandwidth estimate</td><td x-text="formatBitrate(playerStats.bandwidth)"></td></tr>
+        <tr><td>Last segment</td><td x-text="playerStats.lastSegment"></td></tr>
+        <tr><td>Startup time</td><td x-text="playerStats.startupMs ? playerStats.startupMs + ' ms' : '–'"></td></tr>
+        <tr><td>Segments loaded</td><td x-text="playerStats.fragments"></td></tr>
+        <tr><td>Quality switches</td><td x-text="playerStats.levelSwitches"></td></tr>
+        <tr><td>Rebuffering events</td><td x-text="playerStats.stalls"></td></tr>
+        <tr><td>Recovered errors</td><td x-text="playerStats.recoveredErrors"></td></tr>
+        <tr><td>Reconnects</td><td x-text="playerStats.reconnects"></td></tr>
+        <tr><td>Dropped frames</td><td x-text="playerStats.droppedFrames + ' / ' + playerStats.totalFrames"></td></tr>
+      </table>
+
+      <h3>Server</h3>
+      <table class="kv" x-show="serverStats">
+        <tr><td>HTTP requests</td><td x-text="serverStats ? serverStats.http.totalRequests : ''"></td></tr>
+        <tr><td>Open HTTP connections</td><td x-text="serverStats ? serverStats.http.openConnections : ''"></td></tr>
+        <tr><td>Busy HTTP workers</td><td x-text="serverStats ? serverStats.http.busyWorkers + ' / ' + serverStats.http.workerThreads : ''"></td></tr>
+        <tr><td>Data sent</td><td x-text="serverStats ? formatBytes(serverStats.http.bytesSent) : ''"></td></tr>
+        <tr><td>Segment cache</td><td x-text="serverStats ? formatBytes(serverStats.cache.usedBytes) + ' / ' + formatBytes(serverStats.cache.capacityBytes) : ''"></td></tr>
+        <tr><td>Cache hit ratio</td><td x-text="serverStats ? Math.round(serverStats.cache.hitRatio * 100) + ' % (' + serverStats.cache.hits + ' hits)' : ''"></td></tr>
+        <tr><td>Transcodes running</td><td x-text="serverStats ? serverStats.transcoder.running + ' (+' + serverStats.transcoder.queued + ' queued)' : ''"></td></tr>
+        <tr><td>Encoder</td><td x-text="serverStats ? serverStats.transcoder.videoEncoder : ''"></td></tr>
+        <tr><td>RTSP sessions</td><td x-text="serverStats ? serverStats.rtsp.activeSessions + ' / ' + serverStats.rtsp.maxSessions : ''"></td></tr>
+      </table>
+
+      <div x-show="serverStats && serverStats.rtsp.sessions.length > 0">
+        <h3>RTSP sessions</h3>
+        <template x-for="session in (serverStats ? serverStats.rtsp.sessions : [])" :key="session.id">
+          <div class="session-card">
+            <div class="session-title" x-text="session.media"></div>
+            <div class="session-meta">
+              <span x-text="session.state"></span> ·
+              <span x-text="session.transport"></span> ·
+              <span x-text="session.rendition"></span> ·
+              <span x-text="Math.round(session.averageKbps) + ' kbps'"></span>
+            </div>
+            <div class="session-meta">
+              client <span x-text="session.client"></span> · at <span x-text="formatDuration(session.positionSeconds)"></span>
+              · ABR: <span x-text="session.abr.lastDecision"></span>
+            </div>
+          </div>
+        </template>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

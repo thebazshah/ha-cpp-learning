@@ -1,0 +1,13 @@
+# Build output
+build/
+
+# Transcoded HLS output (re-created automatically)
+cache/
+
+# Your media files (keep the folders themselves)
+videos/*
+!videos/.gitkeep
+audios/*
+!audios/.gitkeep
+
+.DS_Store
