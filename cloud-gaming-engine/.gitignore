@@ -1,0 +1,7 @@
+# Build output (the leading "/" means: only this folder, not src/... folders with the same name)
+/build/
+
+# Compiled games (re-created automatically from games/)
+/cache/
+
+.DS_Store

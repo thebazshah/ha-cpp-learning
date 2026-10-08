@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cloud Gaming Engine</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <!-- app.js registers the Alpine component, then Alpine.js starts (both "defer" = run in order after parsing). -->
+  <script defer src="/static/app.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+</head>
+<body x-data="cloudGaming" x-cloak>
+
+  <header class="topbar">
+    <a class="brand" href="/">&#127918; Cloud Gaming Engine</a>
+    <div class="server-state" :class="serverOnline ? 'online' : 'offline'">
+      <span class="dot"></span>
+      <span x-text="serverOnline ? 'Server online' : 'Server unreachable'"></span>
+    </div>
+  </header>
+
+  <!-- ================================================================ LOBBY -->
+  <main class="lobby" x-show="view === 'lobby'">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Games</h2>
+        <button class="ghost" @click="refreshLobby()">&#10227; Refresh</button>
+      </div>
+      <p class="muted" x-show="!lobbyLoaded">Loading&hellip;</p>
+      <div class="empty" x-show="lobbyLoaded && games.length === 0">
+        No games yet. Put a game folder into <code x-text="gamesFolder"></code> - it is compiled and appears here within a few seconds.
+      </div>
+
+      <div class="game-grid">
+        <template x-for="game in games" :key="game.id">
+          <article class="game-card" :class="{ unavailable: !game.ready }">
+            <div class="game-card-head">
+              <h3 x-text="game.name"></h3>
+              <span class="badge" :class="badgeClass(game.status)" x-text="statusLabel(game.status)"></span>
+            </div>
+            <template x-if="game.ready">
+              <div>
+                <p x-text="game.description"></p>
+                <div class="facts">
+                  <span x-text="playersText(game)"></span>
+                  <span x-text="game.width + '×' + game.height + ' px'"></span>
+                  <span x-text="game.ticksPerSecond + ' ticks/s'"></span>
+                  <span x-text="game.activeSessions + ' running'"></span>
+                </div>
+                <button class="primary" @click="createSession(game)" :disabled="creating === game.id"
+                        x-text="creating === game.id ? 'Starting…' : 'Start new session'"></button>
+              </div>
+            </template>
+            <template x-if="!game.ready">
+              <div>
+                <p class="muted" x-show="game.status === 'building'">Compiling and testing the game&hellip;</p>
+                <details x-show="game.error" open>
+                  <summary x-text="game.status === 'build_failed' ? 'Compiler errors' : 'Problem found'"></summary>
+                  <pre class="error-log" x-text="game.error"></pre>
+                </details>
+              </div>
+            </template>
+            <div class="muted small" x-show="game.ready && game.error" x-text="game.error"></div>
+          </article>
+        </template>
+      </div>
+      <p class="error-text" x-show="lobbyError" x-text="lobbyError"></p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Running sessions</h2></div>
+      <div class="empty" x-show="sessions.length === 0">No sessions are running. Start one above!</div>
+      <table class="sessions" x-show="sessions.length > 0">
+        <thead><tr><th>Game</th><th>Session</th><th>Players</th><th>Viewers</th><th>Status</th><th>Up</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="s in sessions" :key="s.id">
+            <tr>
+              <td x-text="s.gameName"></td>
+              <td><code x-text="s.id"></code></td>
+              <td x-text="s.players.filter(p => p.taken).map(p => p.name).join(', ') || '–'"></td>
+              <td x-text="s.viewers"></td>
+              <td class="status-cell" x-text="s.failed ? 'failed: ' + s.error : s.status"></td>
+              <td x-text="formatDuration(s.uptimeSeconds)"></td>
+              <td><a class="button-link" :href="s.url">Open</a></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <!-- ================================================================ PLAY -->
+  <main class="play" x-show="view === 'play'">
+    <section class="panel game-panel">
+      <div class="play-head">
+        <div>
+          <h2 x-text="game ? game.name : 'Game session'"></h2>
+          <div class="muted small">
+            Session <code x-text="sessionId"></code>
+            <span x-show="joined"> · you are <strong x-text="roleText()"></strong></span>
+          </div>
+        </div>
+        <div class="play-actions">
+          <button class="ghost" @click="copyLink()" x-text="copied ? 'Link copied!' : 'Copy invite link'"></button>
+          <a class="button-link ghost" href="/" @click="leave()">Lobby</a>
+        </div>
+      </div>
+
+      <div class="invite">
+        <span class="muted small">Invite link:</span>
+        <code class="invite-url" x-text="shareUrl"></code>
+      </div>
+
+      <!-- Not found / ended -->
+      <div class="notice error-text" x-show="sessionGone">
+        This session does not exist (anymore). <a href="/">Back to the lobby</a>
+      </div>
+
+      <!-- Join form -->
+      <form class="join-form" x-show="!joined && !sessionGone && !connecting" @submit.prevent="join(false)">
+        <p x-show="game" x-text="game ? game.description : ''"></p>
+        <p class="muted small" x-show="sessionInfo" x-text="seatsText()"></p>
+        <label>Your name
+          <input type="text" x-model="playerName" maxlength="24" placeholder="e.g. Alice" autofocus>
+        </label>
+        <div class="join-buttons">
+          <button class="primary" type="submit">Join game</button>
+          <button class="ghost" type="button" @click="join(true)">Just watch</button>
+        </div>
+      </form>
+
+      <!-- The game screen -->
+      <div class="screen-wrap" x-show="joined || connecting">
+        <div class="status-line" :class="connectionState">
+          <span class="dot"></span>
+          <span x-text="gameStatus || connectionText()"></span>
+        </div>
+        <div class="screen">
+          <canvas x-ref="screen" tabindex="0" width="480" height="640"
+                  @contextmenu.prevent></canvas>
+          <div class="overlay" x-show="overlay" x-text="overlay"></div>
+        </div>
+        <div class="hint muted small" x-show="role === 'player'">Click the picture to focus it - mouse and keyboard input is sent to the server.</div>
+        <div class="hint muted small" x-show="role === 'spectator'">You are watching. Input is disabled for spectators.</div>
+      </div>
+
+      <div class="players" x-show="players.length > 0">
+        <template x-for="p in players" :key="p.slot">
+          <span class="chip" :class="{ connected: p.connected, empty: !p.taken, me: p.slot === myPlayer }">
+            <span class="chip-dot"></span>
+            <span x-text="'P' + (p.slot + 1) + ': ' + (p.taken ? p.name : 'free') + (p.slot === myPlayer ? ' (you)' : '') + (p.taken && !p.connected ? ' – reconnecting…' : '')"></span>
+          </span>
+        </template>
+      </div>
+      <p class="error-text" x-show="errorMessage" x-text="errorMessage"></p>
+    </section>
+
+    <!-- Metrics -->
+    <aside class="panel metrics">
+      <h3>Network (measured in this browser)</h3>
+      <table class="kv">
+        <tr><td>Connection</td><td x-text="connectionText()"></td></tr>
+        <tr><td>Round-trip time</td><td x-text="ms(net.rtt) + ' (avg ' + ms(net.rttAvg) + ')'"></td></tr>
+        <tr><td>Input → frame latency</td><td x-text="net.inputLatencyLast ? ms(net.inputLatencyLast) + ' (avg ' + ms(net.inputLatencyAvg) + ', worst ' + ms(net.inputLatencyMax) + ')' : '–'"></td></tr>
+        <tr><td>Frames received</td><td x-text="net.fps.toFixed(1) + ' /s'"></td></tr>
+        <tr><td>Frames displayed</td><td x-text="net.drawFps.toFixed(1) + ' /s'"></td></tr>
+        <tr><td>Bandwidth in</td><td x-text="net.kbps.toFixed(1) + ' kbps'"></td></tr>
+        <tr><td>Average frame</td><td x-text="bytes(net.avgFrameBytes)"></td></tr>
+        <tr><td>Keyframes / deltas</td><td x-text="net.keyframes + ' / ' + net.deltas"></td></tr>
+        <tr><td>Decode time</td><td x-text="net.decodeMs.toFixed(2) + ' ms'"></td></tr>
+        <tr><td>Frame jitter</td><td x-text="ms(net.jitter)"></td></tr>
+        <tr><td>Inputs sent</td><td x-text="net.inputsSent"></td></tr>
+        <tr><td>Reconnects</td><td x-text="net.reconnects"></td></tr>
+        <tr><td>Dropped for me (server)</td><td x-text="myViewer ? myViewer.framesDropped : '–'"></td></tr>
+      </table>
+
+      <h3>Engine (server)</h3>
+      <table class="kv" x-show="engine">
+        <tr><td>Tick rate</td><td x-text="engine ? engine.actualTicksPerSecond.toFixed(1) + ' / ' + engine.targetTicksPerSecond + ' per s' : ''"></td></tr>
+        <tr><td>Game update</td><td x-text="engine ? engine.updateMs.toFixed(3) + ' ms' : ''"></td></tr>
+        <tr><td>Render (capture)</td><td x-text="engine ? engine.renderMs.toFixed(3) + ' ms' : ''"></td></tr>
+        <tr><td>Encode</td><td x-text="engine ? engine.encodeMs.toFixed(3) + ' ms' : ''"></td></tr>
+        <tr><td>Tick budget used</td><td x-text="engine ? engine.loadPercent.toFixed(1) + ' %' : ''"></td></tr>
+        <tr><td>Input wait (queue)</td><td x-text="engine ? engine.inputDelayMs.toFixed(2) + ' ms' : ''"></td></tr>
+        <tr><td>Changed tiles</td><td x-text="engine ? engine.changedTilesPercent.toFixed(1) + ' %' : ''"></td></tr>
+        <tr><td>Last tiles (solid/RLE/raw)</td><td x-text="engine ? engine.lastTiles.solid + ' / ' + engine.lastTiles.rle + ' / ' + engine.lastTiles.raw : ''"></td></tr>
+        <tr><td>Avg delta frame</td><td x-text="engine ? bytes(engine.averageDeltaBytes) : ''"></td></tr>
+        <tr><td>Last keyframe</td><td x-text="engine ? bytes(engine.lastKeyframeBytes) : ''"></td></tr>
+        <tr><td>Video out (all viewers)</td><td x-text="engine ? engine.outputKbps.toFixed(1) + ' kbps' : ''"></td></tr>
+        <tr><td>Frames encoded</td><td x-text="engine ? engine.framesEncoded + ' (' + engine.keyframes + ' key, ' + engine.idleTicks + ' idle ticks)' : ''"></td></tr>
+        <tr><td>Inputs processed</td><td x-text="engine ? engine.inputsProcessed : ''"></td></tr>
+        <tr><td>Late ticks</td><td x-text="engine ? engine.lateTicks : ''"></td></tr>
+        <tr><td>Canvas</td><td x-text="engine ? engine.canvas : ''"></td></tr>
+        <tr><td>Session uptime</td><td x-text="engine ? formatDuration(engine.uptimeSeconds) : ''"></td></tr>
+      </table>
+
+      <h3 x-show="gameMetrics.length > 0" x-text="(game ? game.name : 'Game') + ' metrics'"></h3>
+      <table class="kv" x-show="gameMetrics.length > 0">
+        <template x-for="m in gameMetrics" :key="m.name">
+          <tr><td x-text="m.name"></td><td x-text="m.value"></td></tr>
+        </template>
+      </table>
+
+      <h3 x-show="viewers.length > 0">Connected viewers</h3>
+      <template x-for="v in viewers" :key="v.id">
+        <div class="viewer-card" :class="{ me: v.id === viewerId }">
+          <div><strong x-text="v.name"></strong> <span class="muted" x-text="v.role + (v.id === viewerId ? ' (you)' : '')"></span></div>
+          <div class="muted small" x-text="'RTT ' + ms(v.roundTripMs) + ' · ' + v.framesSent + ' frames · ' + v.framesDropped + ' dropped · ' + bytes(v.bytesSent)"></div>
+        </div>
+      </template>
+    </aside>
+  </main>
+</body>
+</html>

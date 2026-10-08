@@ -1,8 +1,8 @@
-# Build output
-build/
+# Build output (the leading "/" means: only this folder, not src/... folders with the same name)
+/build/
 
 # Transcoded HLS output (re-created automatically)
-cache/
+/cache/
 
 # Your media files (keep the folders themselves)
 videos/*

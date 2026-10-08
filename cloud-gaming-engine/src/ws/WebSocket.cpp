@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 
@@ -23,12 +24,6 @@ constexpr std::uint8_t kOpBinary = 0x2;
 constexpr std::uint8_t kOpClose = 0x8;
 constexpr std::uint8_t kOpPing = 0x9;
 constexpr std::uint8_t kOpPong = 0xA;
-
-#ifdef MSG_NOSIGNAL
-constexpr int kSendFlags = MSG_NOSIGNAL;
-#else
-constexpr int kSendFlags = 0;
-#endif
 
 bool headerContainsToken(const std::string& value, const std::string& token) {
     for (const std::string& part : str::split(value, ',')) {
